@@ -46,6 +46,37 @@ func TestSortedToolsFiltersNilDeclarationAndSortsByKey(t *testing.T) {
 	require.Equal(t, "alpha", sorted[1].Declaration().Name)
 }
 
+func TestSortedToolsWithOrder(t *testing.T) {
+	tools := map[string]tool.Tool{
+		"gamma": testOrderTool{name: "gamma"},
+		"alpha": testOrderTool{name: "alpha"},
+		"skip":  nil,
+		"delta": testOrderTool{name: "delta"},
+		"beta":  testOrderTool{name: "beta"},
+	}
+	names := func(list []tool.Tool) []string {
+		out := make([]string, 0, len(list))
+		for _, t := range list {
+			out = append(out, t.Declaration().Name)
+		}
+		return out
+	}
+
+	t.Run("the named order leads and the rest follows in name order", func(t *testing.T) {
+		sorted := SortedToolsWithOrder(tools, []string{"gamma", "alpha"})
+		require.Equal(t, []string{"gamma", "alpha", "beta", "delta"}, names(sorted))
+	})
+
+	t.Run("an empty order is the plain name order", func(t *testing.T) {
+		require.Equal(t, names(SortedTools(tools)), names(SortedToolsWithOrder(tools, nil)))
+	})
+
+	t.Run("an unknown or repeated name is skipped", func(t *testing.T) {
+		sorted := SortedToolsWithOrder(tools, []string{"missing", "beta", "beta", "skip"})
+		require.Equal(t, []string{"beta", "alpha", "delta", "gamma"}, names(sorted))
+	})
+}
+
 type testOrderTool struct {
 	name string
 }

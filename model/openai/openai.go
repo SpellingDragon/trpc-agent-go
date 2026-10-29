@@ -903,7 +903,7 @@ func (m *Model) estimateToolsTokens(
 	if len(tools) == 0 || m.tokenCounter == nil {
 		return 0
 	}
-	converted := m.convertTools(tools)
+	converted := m.convertTools(tools, nil)
 	if len(converted) == 0 {
 		return 0
 	}
@@ -935,7 +935,7 @@ func (m *Model) buildChatRequestWithToolControl(
 	chatRequest := &openai.ChatCompletionNewParams{
 		Model:    shared.ChatModel(m.name),
 		Messages: m.convertMessages(request.Messages),
-		Tools:    m.convertTools(request.Tools),
+		Tools:    m.convertTools(request.Tools, request.ToolOrder),
 	}
 
 	// Set response_format for native structured outputs when requested.
@@ -1711,9 +1711,12 @@ func (m *Model) convertToolCalls(toolCalls []model.ToolCall) []openai.ChatComple
 	return result
 }
 
-func (m *Model) convertTools(tools map[string]tool.Tool) []openai.ChatCompletionToolParam {
+func (m *Model) convertTools(
+	tools map[string]tool.Tool,
+	order []string,
+) []openai.ChatCompletionToolParam {
 	var result []openai.ChatCompletionToolParam
-	for _, t := range toolorder.SortedTools(tools) {
+	for _, t := range toolorder.SortedToolsWithOrder(tools, order) {
 		declaration := t.Declaration()
 		// Convert the InputSchema to JSON to correctly map to OpenAI's expected format
 		schemaBytes, err := json.Marshal(declaration.InputSchema)

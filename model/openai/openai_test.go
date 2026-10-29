@@ -1586,6 +1586,20 @@ func TestModel_convertMessages_ReasoningContent(t *testing.T) {
 
 // TestModel_convertTools ensures that tool declarations are mapped to the
 // expected OpenAI function definitions.
+func TestModel_convertToolsHonorsToolOrder(t *testing.T) {
+	m := &Model{}
+	toolsMap := map[string]tool.Tool{
+		"alpha": stubTool{decl: &tool.Declaration{Name: "alpha", InputSchema: &tool.Schema{Type: "object"}}},
+		"beta":  stubTool{decl: &tool.Declaration{Name: "beta", InputSchema: &tool.Schema{Type: "object"}}},
+		"gamma": stubTool{decl: &tool.Declaration{Name: "gamma", InputSchema: &tool.Schema{Type: "object"}}},
+	}
+	params := m.convertTools(toolsMap, []string{"gamma", "beta"})
+	require.Len(t, params, 3)
+	require.Equal(t, "gamma", params[0].Function.Name)
+	require.Equal(t, "beta", params[1].Function.Name)
+	require.Equal(t, "alpha", params[2].Function.Name)
+}
+
 func TestModel_convertTools(t *testing.T) {
 	m := New("dummy")
 
@@ -1602,7 +1616,7 @@ func TestModel_convertTools(t *testing.T) {
 		}},
 	}
 
-	params := m.convertTools(toolsMap)
+	params := m.convertTools(toolsMap, nil)
 	require.Len(t, params, 1, "convertTools len=%d want=%d", len(params), 1)
 
 	fn := params[0].Function
@@ -1639,7 +1653,7 @@ func TestModel_convertTools_StrictProxyTopLevelProperties(t *testing.T) {
 		}},
 	}
 
-	converted := m.convertTools(toolsMap)
+	converted := m.convertTools(toolsMap, nil)
 	require.Len(t, converted, 2)
 
 	payload := struct {
@@ -1761,7 +1775,7 @@ func TestConvertTools_UsesOutputSchemaInDescription(t *testing.T) {
 
 	params := m.convertTools(map[string]tool.Tool{
 		decl.Name: stubTool{decl: decl},
-	})
+	}, nil)
 
 	require.Len(t, params, 1)
 	expectedDesc := buildToolDescription(decl)
@@ -5863,7 +5877,7 @@ func TestConvertTools_EmptyTools(t *testing.T) {
 	m := New("dummy")
 
 	tools := map[string]tool.Tool{}
-	params := m.convertTools(tools)
+	params := m.convertTools(tools, nil)
 
 	assert.Empty(t, params, "expected empty tools params")
 }
@@ -5885,7 +5899,7 @@ func TestConvertTools_MultipleTools(t *testing.T) {
 		}},
 	}
 
-	params := m.convertTools(tools)
+	params := m.convertTools(tools, nil)
 
 	assert.Len(t, params, 2, "expected 2 tools")
 }
@@ -6634,7 +6648,7 @@ func TestConvertTools_ErrorCases(t *testing.T) {
 			}},
 		}
 
-		params := m.convertTools(tools)
+		params := m.convertTools(tools, nil)
 		assert.Len(t, params, 1, "expected 1 tool")
 		assert.Equal(t, "valid_tool", params[0].Function.Name, "expected tool name to be valid_tool")
 	})
@@ -6663,7 +6677,7 @@ func TestConvertTools_ErrorCases(t *testing.T) {
 			}},
 		}
 
-		params := m.convertTools(tools)
+		params := m.convertTools(tools, nil)
 		assert.Len(t, params, 1, "expected 1 tool")
 		assert.Equal(t, "complex_tool", params[0].Function.Name, "expected tool name")
 	})

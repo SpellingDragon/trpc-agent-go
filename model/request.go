@@ -619,6 +619,14 @@ type Request struct {
 	Headers map[string]string `json:"-"`
 
 	Tools map[string]tool.Tool `json:"-"` // Tools are not serialized, handled separately
+
+	// ToolOrder names the order the tool definitions are emitted in, ahead of
+	// the name order that fills the rest. A name the map does not hold or a
+	// name repeated is skipped, and an empty order keeps the plain name order,
+	// so a caller that loads tools later keeps the stable ones in front and the
+	// provider-side prefix cache valid for the larger stable part of the
+	// request.
+	ToolOrder []string `json:"-"`
 }
 
 // RequestOption configures a Request.
@@ -635,6 +643,14 @@ func NewRequest(messages []Message, opts ...RequestOption) *Request {
 		}
 	}
 	return req
+}
+
+// WithToolOrder sets the order the tool definitions are emitted in, ahead of
+// the name order that fills the rest. An empty order keeps the plain name order.
+func WithToolOrder(order ...string) RequestOption {
+	return func(req *Request) {
+		req.ToolOrder = append([]string(nil), order...)
+	}
 }
 
 // WithStructuredOutputJSON sets JSON schema structured output for a request.
