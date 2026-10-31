@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"trpc.group/trpc-go/trpc-agent-go/internal/util/message"
 	"trpc.group/trpc-go/trpc-agent-go/log"
@@ -561,6 +562,51 @@ func splitToolResults(
 	return out
 }
 
+// maxDowngradePayloadBytes bounds the payload a downgraded user message embeds.
+//
+// A single response carrying thousands of invalid tool calls used to copy every
+// payload into the conversation chain verbatim, so the chain grew with the storm
+// instead of with the conversation. Payloads above this limit are truncated and
+// annotated, which keeps the chain bounded without dropping the context that
+// tells the model what it sent.
+const maxDowngradePayloadBytes = 4 << 10
+
+// truncationMarkerFormat annotates a truncated payload. It is appended after the
+// closing code fence, so truncation never leaves a markdown block unclosed.
+const truncationMarkerFormat = "\n[truncated %d bytes]\n"
+
+// boundedDowngradeMessage renders payload with render and truncates it so the
+// rendered downgrade message stays within maxDowngradePayloadBytes, appending
+// the truncation marker after the closing code fence. Payloads that fit are
+// rendered unchanged. The budget is the limit minus the fixed header, measured
+// with an empty payload so an oversized payload is never rendered in full; a
+// header that alone exceeds the limit is left untouched, because payload volume
+// is what a tool-call storm amplifies.
+func boundedDowngradeMessage(render func(payload string) string, payload string) string {
+	budget := maxDowngradePayloadBytes - len(render(""))
+	if len(payload) <= budget {
+		return render(payload)
+	}
+	clamped := truncatePayload(payload, budget)
+	return render(clamped) + fmt.Sprintf(truncationMarkerFormat, len(payload)-len(clamped))
+}
+
+// truncatePayload truncates value to at most budget bytes without splitting a
+// UTF-8 sequence, which would corrupt the embedded payload.
+func truncatePayload(value string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	if len(value) <= budget {
+		return value
+	}
+	cut := budget
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return value[:cut]
+}
+
 // downgradeInvalidToolCall converts an invalid tool call into a user message that preserves its payload.
 func downgradeInvalidToolCall(ctx context.Context, call model.ToolCall, reason string) model.Message {
 	log.WarnfContext(ctx,
@@ -569,12 +615,17 @@ func downgradeInvalidToolCall(ctx context.Context, call model.ToolCall, reason s
 		call.ID,
 		reason,
 	)
-	content := fmt.Sprintf(
-		"%s Tool call arguments were downgraded to a user message (%s).\nname: %s\nid: %s\narguments:\n```text\n%s\n```",
-		invalidToolCallTag,
-		reason,
-		call.Function.Name,
-		call.ID,
+	content := boundedDowngradeMessage(
+		func(payload string) string {
+			return fmt.Sprintf(
+				"%s Tool call arguments were downgraded to a user message (%s).\nname: %s\nid: %s\narguments:\n```text\n%s\n```",
+				invalidToolCallTag,
+				reason,
+				call.Function.Name,
+				call.ID,
+				payload,
+			)
+		},
 		string(call.Function.Arguments),
 	)
 	return model.Message{
@@ -590,11 +641,16 @@ func downgradeOrphanToolCall(ctx context.Context, call model.ToolCall) model.Mes
 		call.Function.Name,
 		call.ID,
 	)
-	content := fmt.Sprintf(
-		"%s Tool call was downgraded to a user message because no matching tool result exists.\nname: %s\nid: %s\narguments:\n```text\n%s\n```",
-		orphanToolCallTag,
-		call.Function.Name,
-		call.ID,
+	content := boundedDowngradeMessage(
+		func(payload string) string {
+			return fmt.Sprintf(
+				"%s Tool call was downgraded to a user message because no matching tool result exists.\nname: %s\nid: %s\narguments:\n```text\n%s\n```",
+				orphanToolCallTag,
+				call.Function.Name,
+				call.ID,
+				payload,
+			)
+		},
 		string(call.Function.Arguments),
 	)
 	return model.Message{
@@ -604,19 +660,23 @@ func downgradeOrphanToolCall(ctx context.Context, call model.ToolCall) model.Mes
 }
 
 // downgradeInvalidToolResult converts a tool result associated with an invalid tool call into a user message.
+// The embedded content is bounded by maxDowngradePayloadBytes, so an oversized
+// result cannot fatten the chain through its downgrade.
 func downgradeInvalidToolResult(ctx context.Context, msg model.Message) model.Message {
 	log.WarnfContext(ctx,
 		"toolcall: downgraded invalid tool result to user message: tool_name=%q tool_call_id=%q",
 		msg.ToolName,
 		msg.ToolID,
 	)
-	content := fmt.Sprintf(
-		"%s Tool result was downgraded to a user message.\ntool_call_id: %s\ntool_name: %s\ncontent:\n```text\n%s\n```",
-		invalidToolResultTag,
-		msg.ToolID,
-		msg.ToolName,
-		msg.Content,
-	)
+	content := boundedDowngradeMessage(func(payload string) string {
+		return fmt.Sprintf(
+			"%s Tool result was downgraded to a user message.\ntool_call_id: %s\ntool_name: %s\ncontent:\n```text\n%s\n```",
+			invalidToolResultTag,
+			msg.ToolID,
+			msg.ToolName,
+			payload,
+		)
+	}, msg.Content)
 	return model.Message{
 		Role:    model.RoleUser,
 		Content: content,
@@ -624,19 +684,23 @@ func downgradeInvalidToolResult(ctx context.Context, msg model.Message) model.Me
 }
 
 // downgradeOrphanToolResult converts an orphaned tool result into a user message.
+// The embedded content is bounded by maxDowngradePayloadBytes, so an oversized
+// result cannot fatten the chain through its downgrade.
 func downgradeOrphanToolResult(ctx context.Context, msg model.Message) model.Message {
 	log.WarnfContext(ctx,
 		"toolcall: downgraded orphan tool result to user message: tool_name=%q tool_call_id=%q",
 		msg.ToolName,
 		msg.ToolID,
 	)
-	content := fmt.Sprintf(
-		"%s Tool result was downgraded to a user message because it is orphaned.\ntool_call_id: %s\ntool_name: %s\ncontent:\n```text\n%s\n```",
-		orphanToolResultTag,
-		msg.ToolID,
-		msg.ToolName,
-		msg.Content,
-	)
+	content := boundedDowngradeMessage(func(payload string) string {
+		return fmt.Sprintf(
+			"%s Tool result was downgraded to a user message because it is orphaned.\ntool_call_id: %s\ntool_name: %s\ncontent:\n```text\n%s\n```",
+			orphanToolResultTag,
+			msg.ToolID,
+			msg.ToolName,
+			payload,
+		)
+	}, msg.Content)
 	return model.Message{
 		Role:    model.RoleUser,
 		Content: content,
